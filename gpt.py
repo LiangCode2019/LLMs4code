@@ -132,4 +132,72 @@ class Block(nn.Module):
 class GPTLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
+        self.position_embedding_table = nn.Embedding(block_size, n_embed)
+        self.blocks = nn.Sequential(*[Block(n_embed, n_head=n_head) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embed)
+        self.lm_head = nn.Linear(n_embed, vocab_size)
+        # 初始化
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+        tok_emb = self.token_embedding_table(idx) # (B, T, C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
+        x = tok_emb + pos_emb # (B,T,C)
+        x = self.blocks(x) # (B,T,C)
+        x = self.ln_f(x)  # (B,T,C)
+        logits = self.lm_head(x) # (B, T, vocab_size)
+
+        if targets is None:
+            loss = None
+        else:
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+            targets = targets.view(B*T)
+            loss = F.cross_entropy(logits, targets)
         
+        return logits, loss
+
+    def generate(self, idx, max_new_tokens):
+        #  idx dim: (B,T)
+        for _ in range(max_new_tokens):
+            # 裁剪 索引到最后一个block_size个token
+            idx_cond = idx[:, -block_size:]
+            # 获取预测值
+            logits, loss = self.forward(idx_cond) 
+            # 仅关注最后一个时间步下的预测值
+            logits = logits[:,-1,:]  # (B,C)
+            # 归一化
+            probs = F.softmax(logits, dim=-1) # (B,C)
+            idx_next = torch.multionmial(probs, num_samples=1)  # (B,C)
+            idx = torch.cat((idx, idx_next),dim=1) #(B, T+1)
+        return idx
+
+model = GPTLanguageModel().to(device)
+# 打印模型中的参数量
+print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
+
+optimizer = torch.optim.AdamW(model.parameters(), lr= learning_rate)
+
+for iter in range(max_iters):
+    if iter % eval_interval == 0 or iter == max_iters - 1:
+        losses = estimate_loss(model)
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+    xb, yb = get_batch('train')
+
+    logits, loss = model(xb, yb)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+
+context = torch.zeros((1,1),dtype=torch.long, device=device)
+print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))

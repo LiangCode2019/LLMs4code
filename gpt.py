@@ -80,7 +80,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2,-1) * k.shape[-1] ** -0.5
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B,T,T)
         wei = F.softmax(wei, dim=-1) # (B,T,T) 
-        wei = self.dropout(wei)
+        # wei = self.dropout(wei)
 
         v = self.value(x) # (B, T, head_size)
         out = wei @ v # (B, T, T) @ (B, T, head_size) --> (B, T, head_size)
